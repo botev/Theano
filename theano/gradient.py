@@ -1972,6 +1972,9 @@ class ZeroGrad(ViewOp):
     def grad(self, args, g_outs):
         return [g_out.zeros_like(g_out) for g_out in g_outs]
 
+    def R_op(self, inputs, eval_points):
+        return [x.zeros_like(x) for x in inputs]
+
 
 zero_grad_ = ZeroGrad()
 
