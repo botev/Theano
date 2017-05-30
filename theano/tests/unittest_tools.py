@@ -90,6 +90,17 @@ def verify_grad(op, pt, n_tests=2, rng=None, *args, **kwargs):
         rng = np.random
     T.verify_grad(op, pt, n_tests, rng, *args, **kwargs)
 
+
+def verify_rop(op, pt, n_tests=2, rng=None, *args, **kwargs):
+    """
+    Wrapper for tensor/basic.py:verify_grad
+    Takes care of seeding the random number generator if None is given
+    """
+    if rng is None:
+        seed_rng()
+        rng = np.random
+    T.verify_rop(op, pt, n_tests, rng, *args, **kwargs)
+
 #
 # This supports the following syntax:
 #
