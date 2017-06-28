@@ -412,10 +412,6 @@ class TriGamma(UnaryScalarOp):
             
             DEVICE double _tri_gamma(ga_double x) {
 
-            /*taken from
-            http://people.sc.fsu.edu/~jburkardt/cpp_src/asa121/asa121.html
-            */
-            
             double a = 0.0001;
             double b = 5.0;
             double b2 =  0.1666666667;
