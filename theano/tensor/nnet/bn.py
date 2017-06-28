@@ -456,6 +456,18 @@ class AbstractBatchNormTrain(Op):
         return AbstractBatchNormTrainGrad(self.axes)(
             x, dy, scale, x_mean, x_invstd, epsilon) + disconnected_outputs
 
+    def R_op(self, inputs, eval_points):
+        x, scale, bias, epsilon, running_average_factor = inputs[:5]
+        y, mu, inv_std = self(*inputs)[:3]
+        dx, dscale, dbias = eval_points[:3]
+        d_mu = theano.tensor.mean(dx, self.axes)
+        d_var = (theano.tensor.mean(x * dx, self.axes) - mu * d_mu)
+        d_inv_std = d_var / inv_std * inv_std * inv_std
+        x_norm = (y - bias) / scale
+        d_x_norm = (dx - d_mu) * inv_std + (x - mu) * d_inv_std
+        d_y = x_norm * dscale + d_x_norm * scale + dbias
+        return [d_y, d_mu, d_inv_std]
+
     def connection_pattern(self, node):
         # Specificy that epsilon and running_average_factor are not connected to outputs.
         patterns = [[True, True, True],     # x
