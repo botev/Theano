@@ -349,8 +349,6 @@ def test_binomial():
                 (sample_size, sample_size, [], []),
                 (x.shape, sample_size, [x],
                  [np.zeros(sample_size, dtype=config.floatX)]),
-                ((x.shape[0], sample_size[1]), sample_size, [x],
-                 [np.zeros(sample_size, dtype=config.floatX)]),
                 # test empty size (scalar)
                 ((), (), [], []),
                 ]:
@@ -402,12 +400,6 @@ def test_normal0():
         (x.shape, sample_size, [x],
          [np.zeros(sample_size, dtype=config.floatX)],
          -5., default_rtol, default_rtol),
-        ((x.shape[0], sample_size[1]), sample_size, [x],
-         [np.zeros(sample_size, dtype=config.floatX)],
-         -5., default_rtol, default_rtol),
-        # test odd value
-        (sample_size_odd, sample_size_odd, [], [], -5.,
-         default_rtol, default_rtol),
         # test odd value
         (x.shape, sample_size_odd, [x],
          [np.zeros(sample_size_odd, dtype=config.floatX)],
@@ -420,7 +412,6 @@ def test_normal0():
         ((), (), [], [], -5., default_rtol, 0.02),
         # test with few samples at the same time
         ((1,), (1,), [], [], -5., default_rtol, 0.02),
-        ((2,), (2,), [], [], -5., default_rtol, 0.02),
         ((3,), (3,), [], [], -5., default_rtol, 0.02),
             ]:
 
@@ -749,6 +740,16 @@ def test_undefined_grad():
     out = srng.normal((), avg=avg, std=std)
     assert_raises(theano.gradient.NullTypeGradError, theano.grad, out,
                   (avg, std))
+
+
+def test_f16_nonzero(mode=None, op_to_check=rng_mrg.mrg_uniform):
+    srng = MRG_RandomStreams(seed=utt.fetch_seed())
+    m = srng.uniform(size=(1000, 1000), dtype='float16')
+    assert m.dtype == 'float16', m.type
+    f = theano.function([], m, mode=mode)
+    assert any(isinstance(n.op, op_to_check) for n in f.maker.fgraph.apply_nodes)
+    m_val = f()
+    assert np.all((0 < m_val) & (m_val < 1))
 
 
 if __name__ == "__main__":

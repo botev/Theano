@@ -277,7 +277,7 @@ def psi_inplace(a):
 
 @_scal_inplace
 def tri_gamma_inplace(a):
-    """derivative of the digamma function"""
+    """second derivative of the log gamma function"""
 
 
 @_scal_inplace

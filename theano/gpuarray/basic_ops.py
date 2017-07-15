@@ -951,6 +951,7 @@ class GpuAlloc(HideC, Alloc):
                              (subtensor.GpuIncSubtensor,
                               subtensor.GpuAdvancedIncSubtensor1,
                               subtensor.GpuAdvancedIncSubtensor1_dev20,
+                              subtensor.GpuAdvancedIncSubtensor,
                               blas.GpuGemm, blas.GpuGemv,
                               blas.GpuGer)
                              )):
@@ -1314,7 +1315,6 @@ class GpuJoin(HideC, Join):
         fail = sub['fail']
         out = out_[0]
         copy_inputs_to_list = '\n'.join(copy_to_list)
-        restype = restype
         ctx = sub['params']
 
         code = """
@@ -1632,7 +1632,7 @@ class GpuEye(GpuKernelBase, Op):
         code = """
 KERNEL void eye(GLOBAL_MEM %(ctype)s *a, ga_size a_off,
                 ga_size n, ga_size m, ga_ssize k) {
-    a = (GLOBAL_MEM %(ctype)s *)(((char *)a) + a_off);
+    a = (GLOBAL_MEM %(ctype)s *)(((GLOBAL_MEM char *)a) + a_off);
     ga_ssize coff = max(k, (ga_ssize) 0);
     ga_ssize roff = -min(k, (ga_ssize) 0);
     ga_size nb = (ga_size) min(n - roff, m - coff);
@@ -1706,4 +1706,4 @@ KERNEL void eye(GLOBAL_MEM %(ctype)s *a, ga_size a_off,
         return s
 
     def c_code_cache_version(self):
-        return (8,)
+        return (9,)
