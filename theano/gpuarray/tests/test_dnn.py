@@ -18,13 +18,18 @@ from theano.tensor.nnet import bn
 
 from .. import dnn
 from ..basic_ops import GpuAllocEmpty
-from ..type import gpuarray_shared_constructor
+from ..type import gpuarray_shared_constructor, GpuArrayType
 
 from .config import mode_with_gpu, mode_without_gpu, test_ctx_name, ref_cast
 from . import test_nnet
 from .rnn_support import Model, GRU, LSTM, WrapperLayer
 
 from theano.configdefaults import SUPPORTED_DNN_CONV_ALGO_FWD
+
+try:
+    import pygpu
+except ImportError:
+    pass
 
 mode_with_gpu = mode_with_gpu.including()
 # Globally disabled for mode_without_gpu
@@ -1067,6 +1072,63 @@ def get_conv3d_test_cases():
     return itt
 
 
+def run_conv_small_batched_vs_multicall(inputs_shape, filters_shape, batch_sub):
+    # Function to check issue #5985 (see tests below): https://github.com/Theano/Theano/issues/5985
+
+    # Error occurs with algorithm `small` (CUDNN_CONVOLUTION_FWD_ALGO_IMPLICIT_PRECOMP_GEMM)
+    algo = 'small'
+
+    batch_size = inputs_shape[0]
+
+    utt.seed_rng()
+    inputs_val = np.random.random(inputs_shape).astype('float32')
+    filters_val = np.random.random(filters_shape).astype('float32')
+    # Scale down the input values to prevent very large absolute errors
+    # due to float rounding
+    inputs_val /= 10
+    filters_val /= 10
+    inputs = theano.shared(inputs_val)
+    filters = theano.shared(filters_val)
+
+    if len(inputs_shape) == 5:
+        dnn_func = dnn.dnn_conv3d
+    else:
+        dnn_func = dnn.dnn_conv
+    conv = dnn_func(img=inputs, kerns=filters, algo=algo)
+    # Just compute first and last outputs, to reduce execution time.
+    sub_conv_top = dnn_func(img=inputs[:batch_sub], kerns=filters, algo=algo)
+    sub_conv_bottom = dnn_func(img=inputs[(batch_size - batch_sub):], kerns=filters, algo=algo)
+    f = theano.function([], [conv, sub_conv_top, sub_conv_bottom], mode=mode_with_gpu)
+    res_all, res_batch_top, res_batch_bottom = f()
+    for i in range(batch_sub):
+        # Check first ouputs.
+        utt.assert_allclose(res_batch_top[i], res_all[i])
+        # Then check last outputs.
+        p = batch_size - batch_sub + i
+        # It seems there is a limit batch size of 65536  with algorithm `small`.
+        checked_limit = 2**16
+        if p >= checked_limit:
+            # It seems results are repeated in the entire conv.
+            # It should not happen.
+            if np.allclose(res_all[p % checked_limit], res_all[p]):
+                print('\nconv[%d] == conv[%d] == %s' % (p % checked_limit, p, res_all[p]))
+        utt.assert_allclose(res_batch_bottom[i], res_all[p])
+
+
+def test_batched_conv_small():
+    # OK
+    yield (run_conv_small_batched_vs_multicall, (65536, 2, 2, 2), (1, 2, 2, 2), 5)
+    # Should fail with cuDNN < V6020, but there's currently a workaround in `dnn_fwd.c` for that case.
+    yield (run_conv_small_batched_vs_multicall, (65537, 2, 2, 2), (1, 2, 2, 2), 5)
+
+
+def test_batched_conv3d_small():
+    # OK
+    yield (run_conv_small_batched_vs_multicall, (65536, 2, 2, 2, 2), (1, 2, 2, 2, 2), 5)
+    # Should fail with cuDNN < V6020, but there's currently a workaround in `dnn_fwd.c` for that case.
+    yield (run_conv_small_batched_vs_multicall, (65537, 2, 2, 2, 2), (1, 2, 2, 2, 2), 5)
+
+
 def test_conv3d_fwd():
 
     if not dnn.dnn_available(test_ctx_name):
@@ -1426,6 +1488,76 @@ class test_SoftMax(test_nnet.test_SoftMax):
         # Compare the output of the function with the reference function
         inp = np.random.normal(0, 1, (5, 6)).astype(theano.config.floatX)
         utt.assert_allclose(f(inp), f_ref(inp))
+
+
+def dnn_reduction(nd, idtype, acc_dtype, odtype):
+    inp = T.TensorType(idtype, (False,) * nd)()
+    res = inp.sum(acc_dtype=acc_dtype, dtype=odtype)
+    f = theano.function([inp], res, mode=mode_with_gpu)
+    assert any(isinstance(n.op, dnn.GpuDnnReduction)
+               for n in f.maker.fgraph.apply_nodes)
+
+
+def test_dnn_reduction_opt():
+    if not dnn.dnn_available(test_ctx_name) or dnn.version(raises=False) < 6000:
+        raise SkipTest(dnn.dnn_available.msg)
+
+    for nd in range(1, 9):
+        yield dnn_reduction, nd, 'float32', 'float32', 'float32'
+
+    for idtype, adtype, odtype in (('float64', 'float64', 'float64'),
+                                   ('float16', 'float32', 'float16'),
+                                   ('float16', 'float32', 'float32')):
+        yield dnn_reduction, 2, idtype, adtype, odtype
+
+
+def dnn_reduction_strides(shp, shuffle, slice):
+    utt.fetch_seed()
+    inp = GpuArrayType('float32', (False,) * len(shp),
+                       context_name=test_ctx_name)()
+    tmp = inp.dimshuffle(shuffle)[slice]
+    res = tmp.sum(acc_dtype='float32', dtype='float32')
+    f = theano.function([inp], res, mode=mode_with_gpu)
+    assert any(isinstance(n.op, dnn.GpuDnnReduction)
+               for n in f.maker.fgraph.apply_nodes)
+    data = np.random.random(shp).astype('float32')
+    res = np.sum(data)
+    gdata = pygpu.array(data, context=inp.type.context)
+    gres = f(gdata)
+    utt.assert_allclose(res, np.array(gres))
+
+
+def test_dnn_reduction_strides():
+    yield dnn_reduction_strides, (2, 3, 2), (1, 0, 2), slice(None, None, None)
+    yield dnn_reduction_strides, (2, 3, 2), (0, 1, 2), slice(None, None, -1)
+
+
+def dnn_maxargmax(nd, idtype, axis):
+    inp = T.TensorType(idtype, (False,) * nd)()
+    res = T.max_and_argmax(inp, axis=axis)
+    f = theano.function([inp], res, mode=mode_with_gpu)
+    assert any(isinstance(n.op, dnn.GpuDnnReduction)
+               for n in f.maker.fgraph.apply_nodes)
+
+
+def test_dnn_maxandargmax_opt():
+    if not dnn.dnn_available(test_ctx_name) or dnn.version(raises=False) < 6000:
+        raise SkipTest(dnn.dnn_available.msg)
+
+    for nd in range(1, 9):
+        yield dnn_maxargmax, nd, 'float32', None
+
+    for idtype in ('float64', 'float16'):
+        yield dnn_maxargmax, 2, idtype, None
+
+    yield dnn_maxargmax, 3, 'float32', (0, 1)
+    yield dnn_maxargmax, 3, 'float32', (0, 2)
+    yield dnn_maxargmax, 3, 'float32', (1, 2)
+    yield dnn_maxargmax, 3, 'float32', (0, 1, 2)
+    yield dnn_maxargmax, 3, 'float32', (0,)
+    yield dnn_maxargmax, 3, 'float32', (1,)
+    yield dnn_maxargmax, 3, 'float32', (2,)
+    yield dnn_maxargmax, 3, 'float32', ()
 
 
 def test_dnn_batchnorm_train():

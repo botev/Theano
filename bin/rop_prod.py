@@ -121,7 +121,7 @@ def verify_rop(fun, pt, n_tests=2, rng=None,
     """
     import six.moves.builtins as builtins
     from theano.tests.unittest_tools import seed_rng
-    from theano.gradient import mode_not_debug, Lop, Rop, numeric_grad
+    from theano.gradient import mode_not_slow, Lop, Rop, numeric_grad
 
     pt = [np.array(p) for p in pt]
 
@@ -217,7 +217,7 @@ def verify_rop(fun, pt, n_tests=2, rng=None,
         Fv = theano.tensor.sum(u * Jv)
 
         if no_debug_ref:
-            mode_for_cost = mode_not_debug(mode)
+            mode_for_cost = mode_not_slow(mode)
         else:
             mode_for_cost = mode
 
