@@ -48,8 +48,8 @@ if cusolver_available:
     try:
         from skcuda.cublas import _CUBLAS_FILL_MODE as FILL_MODE
     except (ImportError, OSError, RuntimeError, pkg_resources.DistributionNotFound):
-        FILL_MODE = {0: 0, 'l': 0, 'L': 0, 1: 1, 'u': 1, 'U': 1} 
- 
+        FILL_MODE = {0: 0, 'l': 0, 'L': 0, 1: 1, 'u': 1, 'U': 1}
+
     def cusolverDnSpotrs(handle, uplo, n, nrhs, A, lda,
                          B, ldb, devInfo):
         """
@@ -192,7 +192,7 @@ class GpuCusolverSolve(Op):
 
             workspace_ptr = workspace.gpudata
             dev_info_ptr = dev_info.gpudata
-            uplo = FILL_MODE[0]            
+            uplo = FILL_MODE[0]
 
             with context:
                 cusolver.cusolverDnSpotrf(
