@@ -182,10 +182,8 @@ def Rop(f, wrt, eval_points, disconnected_outputs="raise",
         - 'warn': consider the gradient zero, and print a warning.
         - 'raise': raise DisconnectedInputError.
     :type return_disconnected : str
-        - 'zero' : If f[i] is disconnected, return value i will be
-                   wrt[i].zeros_like()
-        - 'None' : If f[i] is disconnected, return value i will be
-                   None
+        - 'zero' : If f[i] is disconnected, return value i will be wrt[i].zeros_like()
+        - 'None' : If f[i] is disconnected, return value i will be None
         - 'Disconnected' : returns variables of type DisconnectedType
     :rtype: :class:`~theano.gof.Variable` or list/tuple of Variables depending on type of f
     :return: symbolic expression such that
