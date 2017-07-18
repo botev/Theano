@@ -178,13 +178,18 @@ def Rop(f, wrt, eval_points, disconnected_outputs="raise",
         Defines the behaviour if some of the variables in `f` are
         have no dependency on any of the variable in `wrt` (or if
         all links are non-differentiable). The possible values are:
+
         - 'ignore': considers that the gradient on these parameters is zero.
         - 'warn': consider the gradient zero, and print a warning.
         - 'raise': raise DisconnectedInputError.
-    :type return_disconnected : str
-        - 'zero' : If f[i] is disconnected, return value i will be wrt[i].zeros_like()
-        - 'None' : If f[i] is disconnected, return value i will be None
+
+    :type return_disconnected : {'zero', 'None', 'Disconnected'}
+        - 'zero' : If wrt[i] is disconnected, return value i will be
+                   wrt[i].zeros_like()
+        - 'None' : If wrt[i] is disconnected, return value i will be
+                   None
         - 'Disconnected' : returns variables of type DisconnectedType
+
     :rtype: :class:`~theano.gof.Variable` or list/tuple of Variables depending on type of f
     :return: symbolic expression such that
         R_op[i] = sum_j ( d f[i] / d wrt[j]) eval_point[j]

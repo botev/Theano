@@ -33,6 +33,7 @@ from theano.tensor.nnet.abstract_conv import (BaseAbstractConv,
                                               AbstractConv3d,
                                               AbstractConv3d_gradWeights,
                                               AbstractConv3d_gradInputs)
+from theano.tensor.nnet.neighbours import Images2Neibs
 import theano.tensor.nlinalg as nlinalg
 import theano.tensor.signal.pool as pool
 import theano.tensor.slinalg as slinalg
@@ -75,6 +76,7 @@ from .opt_util import alpha_merge, output_merge, pad_dims, unpad_dims
 from .reduction import GpuMaxAndArgmax
 from .linalg import (GpuCusolverSolve, MATRIX_STRUCTURES_SOLVE, GpuCholesky,
                      cusolver_available, GpuMagmaMatrixInverse, gpu_svd)
+from .neighbours import GpuImages2Neibs
 
 _logger = logging.getLogger("theano.gpuarray.opt")
 
@@ -1533,7 +1535,8 @@ def local_abstractconv_gemm(node):
     border_mode = node.op.border_mode
     subsample = node.op.subsample
     filter_dilation = node.op.filter_dilation
-    if ((border_mode == 'full') and (subsample == (1, 1))):
+
+    if ((border_mode == 'full') and (subsample == (1, 1)) and node.op.num_groups == 1):
         if not node.op.filter_flip:
             kern = kern[:, :, ::-1, ::-1]
         # need to dimshuffle the kernel for full convolution
@@ -1550,8 +1553,9 @@ def local_abstractconv_gemm(node):
         # By default use GpuCorrMM
         rval = GpuCorrMM(border_mode,
                          subsample,
-                         filter_dilation)(gpu_contiguous(img),
-                                          gpu_contiguous(kern))
+                         filter_dilation,
+                         node.op.num_groups)(gpu_contiguous(img),
+                                             gpu_contiguous(kern))
 
         # call GpuCorrMM_gradWeights if good
         # (the latter is faster if batchsize * kernelHeight * kernelWidth
@@ -1669,7 +1673,8 @@ def local_abstractconv_gradweights_gemm(node):
 
     rval = GpuCorrMM_gradWeights(border_mode=node.op.border_mode,
                                  subsample=node.op.subsample,
-                                 filter_dilation=node.op.filter_dilation)(
+                                 filter_dilation=node.op.filter_dilation,
+                                 num_groups=node.op.num_groups)(
         gpu_contiguous(img), gpu_contiguous(topgrad), shape)
     if node.op.filter_flip:
         rval = rval[:, :, ::-1, ::-1]
@@ -1713,7 +1718,8 @@ def local_abstractconv_gradinputs_gemm(node):
 
     rval = GpuCorrMM_gradInputs(border_mode=node.op.border_mode,
                                 subsample=node.op.subsample,
-                                filter_dilation=node.op.filter_dilation)(
+                                filter_dilation=node.op.filter_dilation,
+                                num_groups=node.op.num_groups)(
         gpu_contiguous(kern), gpu_contiguous(topgrad), shape)
     return [rval]
 
@@ -2079,6 +2085,15 @@ def local_gpu_maxandargmax(op, context_name, inputs, outputs):
         ret = op(casted_inputs)
         return [ret[0].astype('float16'), ret[1]]
     return op
+
+
+# Images2Neibs
+@register_opt('fast_compile')
+@op_lifter([Images2Neibs])
+@register_opt2([Images2Neibs], 'fast_compile')
+def local_gpua_images2neibs(op, context_name, inputs, outputs):
+    if op.mode in ['valid', 'half', 'full', 'ignore_borders', 'wrap_centered']:
+        return GpuImages2Neibs(op.mode)
 
 
 # solve
