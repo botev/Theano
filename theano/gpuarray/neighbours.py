@@ -577,4 +577,3 @@ class GpuImages2Neibs(GpuKernelBase, Images2Neibs, Op):
     def perform(self, node, inp, out, params):
         # Disable the perform method from the CPU version
         Op.perform(self, node, inp, out, params)
-
