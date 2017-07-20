@@ -44,11 +44,6 @@ if cusolver_available:
                                                        cusolver.ctypes.c_void_p,
                                                        cusolver.ctypes.c_int,
                                                        cusolver.ctypes.c_void_p]
-    # Add the uplo constants
-    try:
-        from skcuda.cublas import _CUBLAS_FILL_MODE as FILL_MODE
-    except (ImportError, OSError, RuntimeError, pkg_resources.DistributionNotFound):
-        FILL_MODE = {0: 0, 'l': 0, 'L': 0, 1: 1, 'u': 1, 'U': 1}
 
     def cusolverDnSpotrs(handle, uplo, n, nrhs, A, lda,
                          B, ldb, devInfo):
@@ -192,25 +187,15 @@ class GpuCusolverSolve(Op):
 
             workspace_ptr = workspace.gpudata
             dev_info_ptr = dev_info.gpudata
-            uplo = FILL_MODE[0]
 
             with context:
                 cusolver.cusolverDnSpotrf(
-                    context.cusolver_handle, uplo, n, A_ptr, lda, workspace_ptr,
+                    context.cusolver_handle, 0, n, A_ptr, lda, workspace_ptr,
                     workspace_size, dev_info_ptr)
                 self.check_dev_info(dev_info)
 
                 cusolverDnSpotrs(
-                    context.cusolver_handle, uplo, n, m, A_ptr, lda,
-                    b_ptr, ldb, dev_info_ptr)
-
-        elif self.A_structure in ('lower_triangular', 'upper_triangular'):
-            dev_info = pygpu.zeros((1,), dtype='int32', context=context)
-            dev_info_ptr = dev_info.gpudata
-            uplo = FILL_MODE[self.A_structure[0]]
-            with context:
-                cusolverDnSpotrs(
-                    context.cusolver_handle, uplo, n, m, A_ptr, lda,
+                    context.cusolver_handle, 0, n, m, A_ptr, lda,
                     b_ptr, ldb, dev_info_ptr)
 
         else:
