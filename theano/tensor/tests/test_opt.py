@@ -63,6 +63,7 @@ from theano.tensor.elemwise import DimShuffle
 from theano.tensor.type import values_eq_approx_remove_nan
 from theano.tests import unittest_tools as utt
 from theano.gof.opt import check_stack_trace, out2in
+from theano import change_flags
 from nose.plugins.attrib import attr
 
 mode_opt = theano.config.mode
@@ -1366,6 +1367,7 @@ class TestCompositeCodegen(unittest.TestCase):
         utt.assert_allclose(f([[1.]]), [[0.]])
 
 
+@utt.assertFailure_fast
 def test_log1p():
     m = theano.config.mode
     if m == 'FAST_COMPILE':
@@ -1988,6 +1990,7 @@ class test_local_subtensor_lift(unittest.TestCase):
         assert len(prog) == 3
         f([4, 5])  # let debugmode test something
 
+    @utt.assertFailure_fast
     def test4(self):
         # basic test that the optimization doesn't work with broadcasting
         # ... It *could* be extended to,
@@ -3685,6 +3688,7 @@ class Test_local_canonicalize_alloc(unittest.TestCase):
     def setUp(self):
         self.rng = np.random.RandomState(utt.fetch_seed())
 
+    @change_flags(compute_test_value='off')
     def test0(self):
         x = shared(self.rng.randn(3, 7))
         a = tensor.alloc(x, 6, 7)
@@ -5602,7 +5606,7 @@ class T_local_opt_alloc(unittest.TestCase):
         finally:
             theano.config.warn_float64 = orig
 
-    @theano.configparser.change_flags(on_opt_error='raise')
+    @change_flags(on_opt_error='raise')
     def test_sum_bool_upcast(self):
         s = theano.tensor.lscalar()
         a = theano.tensor.alloc(np.asarray(True, dtype='bool'), s, s)

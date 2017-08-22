@@ -184,7 +184,6 @@ def get_conv_gradweights_shape(image_shape, top_shape,
     if filter_dilation is None:
         filter_dilation = np.ones(len(subsample), dtype='int')
     if num_groups > 1:
-        assert len(subsample) == 2
         nchan = nchan // num_groups
 
     if isinstance(border_mode, tuple):
@@ -295,7 +294,6 @@ def get_conv_gradinputs_shape(kernel_shape, top_shape,
     if filter_dilation is None:
         filter_dilation = np.ones(len(subsample), dtype='int')
     if num_groups > 1:
-        assert len(subsample) == 2
         nkern = nkern * num_groups
 
     if isinstance(border_mode, tuple):
@@ -571,7 +569,7 @@ def separable_conv2d(input,
         Set of filters used depthwise convolution layer of shape
         (depthwise output channels, 1, filter rows, filter columns).
 
-    depthwise_filters: symbolic 4D tensor
+    pointwise_filters: symbolic 4D tensor
         Set of filters used pointwise convolution layer of shape
         (output channels, depthwise output channels, 1, 1).
 
@@ -664,6 +662,130 @@ def separable_conv2d(input,
     return pointwise_op
 
 
+def separable_conv3d(input,
+                     depthwise_filters,
+                     pointwise_filters,
+                     num_channels,
+                     input_shape=None,
+                     depthwise_filter_shape=None,
+                     pointwise_filter_shape=None,
+                     border_mode='valid',
+                     subsample=(1, 1, 1),
+                     filter_flip=True,
+                     filter_dilation=(1, 1, 1)):
+    """
+    This function will build the symbolic graph for depthwise
+    convolutions which act separately on the input channels followed by
+    pointwise convolution which mixes channels.
+
+    Parameters
+    ----------
+    input: symbolic 5D tensor
+        Mini-batch of feature map stacks, of shape
+        (batch size, input channels, input depth, input rows, input columns).
+        See the optional parameter ``input_shape``.
+
+    depthwise_filters: symbolic 5D tensor
+        Set of filters used depthwise convolution layer of shape
+        (depthwise output channels, 1, filter_depth, filter rows, filter columns).
+
+    pointwise_filters: symbolic 5D tensor
+        Set of filters used pointwise convolution layer of shape
+        (output channels, depthwise output channels, 1, 1, 1).
+
+    num_channels: int
+        The number of channels of the input. Required for depthwise
+        convolutions.
+
+    input_shape: None, tuple/list of len 5 of int or Constant variable
+        The shape of the input parameter.
+        Optional, possibly used to choose an optimal implementation.
+        You can give ``None`` for any element of the list to specify that this
+        element is not known at compile time.
+
+    depthwise_filter_shape: None, tuple/list of len 5 of int or Constant variable
+        The shape of the depthwise filters parameter.
+        Optional, possibly used to choose an optimal implementation.
+        You can give ``None`` for any element of the list to specify that this
+        element is not known at compile time.
+
+    pointwise_filter_shape: None, tuple/list of len 5 of int or Constant variable
+        The shape of the pointwise filters parameter.
+        Optional, possibly used to choose an optimal implementation.
+        You can give ``None`` for any element of the list to specify that this
+        element is not known at compile time.
+
+    border_mode: str, int or tuple of three int
+        This applies only to depthwise convolutions
+        Either of the following:
+
+        ``'valid'``: apply filter wherever it completely overlaps with the
+            input. Generates output of shape: input shape - filter shape + 1
+        ``'full'``: apply filter wherever it partly overlaps with the input.
+            Generates output of shape: input shape + filter shape - 1
+        ``'half'``: pad input with a symmetric border of ``filter // 2``,
+            then perform a valid convolution. For filters with an odd
+            number of slices, rows and columns, this leads to the output
+            shape being equal to the input shape.
+        ``int``: pad input with a symmetric border of zeros of the given
+            width, then perform a valid convolution.
+        ``(int1, int2, int3)``
+            pad input with a symmetric border of ``int1``, ``int2`` and
+            ``int3`` columns, then perform a valid convolution.
+
+    subsample: tuple of len 3
+        This applies only to depthwise convolutions
+        Factor by which to subsample the output.
+        Also called strides elsewhere.
+
+    filter_flip: bool
+        If ``True``, will flip the filter x, y and z dimensions before
+        sliding them over the input. This operation is normally
+        referred to as a convolution, and this is the default. If
+        ``False``, the filters are not flipped and the operation is
+        referred to as a cross-correlation.
+
+    filter_dilation: tuple of len 3
+        Factor by which to subsample (stride) the input.
+        Also called dilation elsewhere.
+
+    Returns
+    -------
+    Symbolic 5D tensor
+        Set of feature maps generated by convolutional layer. Tensor is
+        of shape (batch size, output channels, output_depth,
+        output rows, output columns)
+
+    """
+
+    input = as_tensor_variable(input)
+    depthwise_filters = as_tensor_variable(depthwise_filters)
+    conv_op = AbstractConv3d(imshp=input_shape,
+                             kshp=depthwise_filter_shape,
+                             border_mode=border_mode,
+                             subsample=subsample,
+                             filter_flip=filter_flip,
+                             filter_dilation=filter_dilation,
+                             num_groups=num_channels)
+
+    if input_shape is None or depthwise_filter_shape is None:
+        depthwise_op_shape = None
+    else:
+        depthwise_op_shape = conv_op.infer_shape(None, [input_shape, depthwise_filter_shape])[0]
+    depthwise_op = conv_op(input, depthwise_filters)
+
+    pointwise_op = conv3d(input=depthwise_op,
+                          filters=pointwise_filters,
+                          input_shape=depthwise_op_shape,
+                          filter_shape=pointwise_filter_shape,
+                          border_mode='valid',
+                          subsample=(1, 1, 1),
+                          filter_flip=filter_flip,
+                          filter_dilation=(1, 1, 1),
+                          num_groups=1)
+    return pointwise_op
+
+
 def conv3d(input,
            filters,
            input_shape=None,
@@ -671,7 +793,8 @@ def conv3d(input,
            border_mode='valid',
            subsample=(1, 1, 1),
            filter_flip=True,
-           filter_dilation=(1, 1, 1)):
+           filter_dilation=(1, 1, 1),
+           num_groups=1):
     """
     This function will build the symbolic graph for convolving a mini-batch of a
     stack of 3D inputs with a set of 3D filters. The implementation is modelled
@@ -734,6 +857,10 @@ def conv3d(input,
         Factor by which to subsample (stride) the input.
         Also called dilation elsewhere.
 
+    num_groups : int
+        Divides the image, kernel and output tensors into num_groups
+        separate groups. Each which carry out convolutions separately
+
     Returns
     -------
     Symbolic 5D tensor
@@ -759,7 +886,8 @@ def conv3d(input,
                              border_mode=border_mode,
                              subsample=subsample,
                              filter_flip=filter_flip,
-                             filter_dilation=filter_dilation)
+                             filter_dilation=filter_dilation,
+                             num_groups=num_groups)
     return conv_op(input, filters)
 
 
@@ -910,7 +1038,8 @@ def conv3d_grad_wrt_inputs(output_grad,
                            border_mode='valid',
                            subsample=(1, 1, 1),
                            filter_flip=True,
-                           filter_dilation=(1, 1, 1)):
+                           filter_dilation=(1, 1, 1),
+                           num_groups=1):
     """Compute conv output gradient w.r.t its inputs
 
     This function builds the symbolic graph for getting the
@@ -983,6 +1112,9 @@ def conv3d_grad_wrt_inputs(output_grad,
     filter_dilation : tuple of len 3
         The filter dilation used in the forward pass.
         Also known as input striding.
+    num_groups : int
+        Divides the image, kernel and output tensors into num_groups
+        separate groups. Each which carry out convolutions separately
 
     Returns
     -------
@@ -1033,7 +1165,8 @@ def conv3d_grad_wrt_inputs(output_grad,
                                               border_mode=border_mode,
                                               subsample=subsample,
                                               filter_flip=filter_flip,
-                                              filter_dilation=filter_dilation)
+                                              filter_dilation=filter_dilation,
+                                              num_groups=num_groups)
 
     return grad_input_op(filters, output_grad, input_shape[-3:])
 
@@ -1177,7 +1310,8 @@ def conv3d_grad_wrt_weights(input,
                             border_mode='valid',
                             subsample=(1, 1, 1),
                             filter_flip=True,
-                            filter_dilation=(1, 1, 1)):
+                            filter_dilation=(1, 1, 1),
+                            num_groups=1):
     """Compute conv output gradient w.r.t its weights
 
     This function will build the symbolic graph for getting the
@@ -1241,6 +1375,9 @@ def conv3d_grad_wrt_weights(input,
     filter_dilation : tuple of len 3
         The filter dilation used in the forward pass.
         Also known as input striding.
+    num_groups : int
+        Divides the image, kernel and output tensors into num_groups
+        separate groups. Each which carry out convolutions separately
 
     Returns
     -------
@@ -1291,7 +1428,8 @@ def conv3d_grad_wrt_weights(input,
                                                border_mode=border_mode,
                                                subsample=subsample,
                                                filter_flip=filter_flip,
-                                               filter_dilation=filter_dilation)
+                                               filter_dilation=filter_dilation,
+                                               num_groups=num_groups)
 
     return gradWeight_op(input, output_grad, filter_shape[-3:])
 
@@ -1603,8 +1741,6 @@ class BaseAbstractConv(Op):
         self.filter_dilation = tuple(filter_dilation)
         if num_groups < 1:
             raise ValueError("num_groups must have value greater than zero")
-        elif num_groups > 1 and convdim == 3:
-            raise ValueError("grouped convolution not supported for 3D convolutions")
         self.num_groups = num_groups
 
     def do_constant_folding(self, node):
@@ -1664,21 +1800,22 @@ class BaseAbstractConv(Op):
                      tuple(slice(None, None, dilation[i]) for i in range(self.convdim))
                      ] = kern
 
+        if img.shape[1] % self.num_groups != 0:
+            raise ValueError(
+                'number of input channels must be divible by num_groups')
+        if kern.shape[0] % self.num_groups != 0:
+            raise ValueError(
+                'number of filters must be divisible by num_groups')
+        if img.shape[1] // num_groups != kern.shape[1]:
+            raise ValueError(
+                'the number of input channels in the kernel should '
+                'specify the number of channels of 1 group')
+        input_channel_offset = img.shape[1] // self.num_groups
+        output_channel_offset = kern.shape[0] // self.num_groups
+
         if self.convdim == 2:
-            if img.shape[1] % self.num_groups != 0:
-                raise ValueError(
-                    'number of input channels must be divible by num_groups')
-            if kern.shape[0] % self.num_groups != 0:
-                raise ValueError(
-                    'number of filters must be divisible by num_groups')
-            if img.shape[1] // num_groups != kern.shape[1]:
-                raise ValueError(
-                    'the number of input channels in the kernel should '
-                    'specify the number of channels of 1 group')
             val = _valfrommode(mode)
             bval = _bvalfromboundary('fill')
-            input_channel_offset = img.shape[1] // self.num_groups
-            output_channel_offset = kern.shape[0] // self.num_groups
 
             with warnings.catch_warnings():
                 warnings.simplefilter('ignore', np.ComplexWarning)
@@ -1692,11 +1829,12 @@ class BaseAbstractConv(Op):
                                                                                           im0, ...], 1, val, bval, 0)
         elif self.convdim == 3:
             for b in xrange(img.shape[0]):
-                for n in xrange(kern.shape[0]):
-                    for im0 in xrange(img.shape[1]):
-                        out[b, n, ...] += convolve(img[b, im0, ...],
-                                                   dilated_kern[n, im0, ...],
-                                                   mode)
+                for g in xrange(self.num_groups):
+                    for n in xrange(output_channel_offset):
+                        for im0 in xrange(input_channel_offset):
+                            out[b, g * output_channel_offset + n, ...] += convolve(img[b, g * input_channel_offset + im0, ...],
+                                                                                   dilated_kern[g * output_channel_offset + n,
+                                                                                   im0, ...], mode)
         else:
             raise NotImplementedError('only 2D and 3D convolution are implemented')
         return out
@@ -1888,13 +2026,15 @@ class AbstractConv3d(AbstractConv):
                  border_mode="valid",
                  subsample=(1, 1, 1),
                  filter_flip=True,
-                 filter_dilation=(1, 1, 1)):
+                 filter_dilation=(1, 1, 1),
+                 num_groups=1):
         super(AbstractConv3d, self).__init__(convdim=3,
                                              imshp=imshp, kshp=kshp,
                                              border_mode=border_mode,
                                              subsample=subsample,
                                              filter_flip=filter_flip,
-                                             filter_dilation=filter_dilation)
+                                             filter_dilation=filter_dilation,
+                                             num_groups=num_groups)
 
     def grad(self, inp, grads):
         bottom, weights = inp
@@ -1903,13 +2043,15 @@ class AbstractConv3d(AbstractConv):
                                              self.border_mode,
                                              self.subsample,
                                              self.filter_flip,
-                                             self.filter_dilation)(
+                                             self.filter_dilation,
+                                             self.num_groups)(
             weights, top, bottom.shape[-3:])
         d_weights = AbstractConv3d_gradWeights(self.imshp, self.kshp,
                                                self.border_mode,
                                                self.subsample,
                                                self.filter_flip,
-                                               self.filter_dilation)(
+                                               self.filter_dilation,
+                                               self.num_groups)(
 
             bottom, top, weights.shape[-3:])
 
@@ -2033,8 +2175,8 @@ class AbstractConv_gradWeights(BaseAbstractConv):
             mshp0 = mat.shape[0] // self.num_groups
             mshp1 = mat.shape[1] * self.num_groups
             mat = mat.reshape((self.num_groups, mshp0) + mat.shape[1:])
-            mat = mat.transpose((1, 0, 2, 3, 4))
-            mat = mat.reshape((mshp0, mshp1) + mat.shape[-2:])
+            mat = mat.transpose((1, 0, 2) + tuple(range(3, 3 + self.convdim)))
+            mat = mat.reshape((mshp0, mshp1) + mat.shape[-self.convdim:])
             return mat
 
         if self.num_groups > 1:
@@ -2147,13 +2289,15 @@ class AbstractConv3d_gradWeights(AbstractConv_gradWeights):
                  border_mode="valid",
                  subsample=(1, 1, 1),
                  filter_flip=True,
-                 filter_dilation=(1, 1, 1)):
+                 filter_dilation=(1, 1, 1),
+                 num_groups=1):
         super(AbstractConv3d_gradWeights, self).__init__(convdim=3,
                                                          imshp=imshp, kshp=kshp,
                                                          border_mode=border_mode,
                                                          subsample=subsample,
                                                          filter_flip=filter_flip,
-                                                         filter_dilation=filter_dilation)
+                                                         filter_dilation=filter_dilation,
+                                                         num_groups=num_groups)
 
     def grad(self, inp, grads):
         bottom, top = inp[:2]
@@ -2162,15 +2306,17 @@ class AbstractConv3d_gradWeights(AbstractConv_gradWeights):
                                              self.border_mode,
                                              self.subsample,
                                              self.filter_flip,
-                                             self.filter_dilation)(weights,
-                                                                   top,
-                                                                   bottom.shape[-3:])
+                                             self.filter_dilation,
+                                             self.num_groups)(weights,
+                                                              top,
+                                                              bottom.shape[-3:])
         d_top = AbstractConv3d(self.imshp,
                                self.kshp,
                                self.border_mode,
                                self.subsample,
                                self.filter_flip,
-                               self.filter_dilation)(bottom, weights)
+                               self.filter_dilation,
+                               self.num_groups)(bottom, weights)
         # Make sure that the broadcastable pattern of the inputs is used
         # for the gradients, even if the grad opts are not able to infer
         # that the dimensions are broadcastable.
@@ -2300,8 +2446,8 @@ class AbstractConv_gradInputs(BaseAbstractConv):
             mshp0 = mat.shape[0] // self.num_groups
             mshp1 = mat.shape[1] * self.num_groups
             mat = mat.reshape((self.num_groups, mshp0) + mat.shape[1:])
-            mat = mat.transpose((1, 0, 2, 3, 4))
-            mat = mat.reshape((mshp0, mshp1) + mat.shape[-2:])
+            mat = mat.transpose((1, 0, 2) + tuple(range(3, 3 + self.convdim)))
+            mat = mat.reshape((mshp0, mshp1) + mat.shape[-self.convdim:])
             return mat
         kern = correct_for_groups(kern)
         kern = kern.transpose(axes_order)
@@ -2414,13 +2560,15 @@ class AbstractConv3d_gradInputs(AbstractConv_gradInputs):
                  border_mode="valid",
                  subsample=(1, 1, 1),
                  filter_flip=True,
-                 filter_dilation=(1, 1, 1)):
+                 filter_dilation=(1, 1, 1),
+                 num_groups=1):
         super(AbstractConv3d_gradInputs, self).__init__(convdim=3,
                                                         imshp=imshp, kshp=kshp,
                                                         border_mode=border_mode,
                                                         subsample=subsample,
                                                         filter_flip=filter_flip,
-                                                        filter_dilation=filter_dilation)
+                                                        filter_dilation=filter_dilation,
+                                                        num_groups=num_groups)
 
     def grad(self, inp, grads):
         weights, top = inp[:2]
@@ -2429,13 +2577,15 @@ class AbstractConv3d_gradInputs(AbstractConv_gradInputs):
                                                self.border_mode,
                                                self.subsample,
                                                self.filter_flip,
-                                               self.filter_dilation)(bottom, top,
-                                                                     weights.shape[-3:])
+                                               self.filter_dilation,
+                                               self.num_groups)(bottom, top,
+                                                                weights.shape[-3:])
         d_top = AbstractConv3d(self.imshp, self.kshp,
                                self.border_mode,
                                self.subsample,
                                self.filter_flip,
-                               self.filter_dilation)(bottom, weights)
+                               self.filter_dilation,
+                               self.num_groups)(bottom, weights)
         # Make sure that the broadcastable pattern of the inputs is used
         # for the gradients, even if the grad opts are not able to infer
         # that the dimensions are broadcastable.

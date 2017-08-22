@@ -32,6 +32,7 @@ from theano.tensor.nnet import (categorical_crossentropy,
                                 relu,
                                 h_softmax,
                                 elu,
+                                selu,
                                 binary_crossentropy,
                                 sigmoid_binary_crossentropy,
                                 confusion_matrix)
@@ -578,7 +579,6 @@ class T_CrossentropyCategorical1Hot(utt.InferShapeTester):
 
         theano.compile.mode.optdb.query(
             theano.compile.mode.OPT_FAST_RUN).optimize(fgraph)
-
         assert (fgraph.outputs[0].owner.op ==
                 crossentropy_softmax_argmax_1hot_with_bias)
 
@@ -651,7 +651,6 @@ class T_CrossentropyCategorical1Hot(utt.InferShapeTester):
         #    print node.op
         # print '===='
         assert len(fgraph.toposort()) == 2
-
         assert (fgraph.outputs[0].owner.op ==
                 crossentropy_softmax_argmax_1hot_with_bias)
 
@@ -1381,6 +1380,7 @@ def test_argmax_pushdown_bias():
     #    print node.op
     types_to_check = (tensor.DimShuffle, tensor.Elemwise, tensor.Argmax)
     assert len(fgraph.toposort()) == 3
+
     for i, type in enumerate(types_to_check):
         assert isinstance(fgraph.toposort()[i].op, type)
     assert check_stack_trace(fgraph, ops_to_check=types_to_check)
@@ -1735,6 +1735,19 @@ def test_elu():
     for alpha in 1.5, 2, -1, -1.5, -2:
         y = elu(x, alpha).eval({x: X})
         utt.assert_allclose(y, np.where(X > 0, X, alpha * (np.exp(X) - 1)))
+
+
+def test_selu():
+    alpha = 1.6732632423543772848170429916717
+    scale = 1.0507009873554804934193349852946
+
+    x = matrix('x')
+    seed = theano.tests.unittest_tools.fetch_seed()
+    rng = np.random.RandomState(seed)
+    X = rng.randn(20, 30).astype(config.floatX)
+
+    y = selu(x).eval({x: X})
+    utt.assert_allclose(y, np.where(X > 0, scale * X, scale * alpha * (np.exp(X) - 1)))
 
 
 def test_binary_crossentropy_reshape():
