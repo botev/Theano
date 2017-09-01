@@ -385,8 +385,12 @@ class Function(object):
         # TODO: this only need to be set if there is more then 1 input
         self._check_for_aliased_inputs = False
         for i in maker.inputs:
-            if (isinstance(i, In) and ((hasattr(i, 'borrow') and i.borrow) or
-                                       (hasattr(i, 'mutable') and i.mutable))):
+            # If the input is a shared variable, the memory region is
+            # under Theano control and so we don't need to check if it
+            # is aliased as we never do that.
+            if (isinstance(i, In) and not i.shared and
+                (getattr(i, 'borrow', False) or
+                 getattr(i, 'mutable', False))):
                 self._check_for_aliased_inputs = True
                 break
 
@@ -1026,10 +1030,10 @@ class Function(object):
         if (hasattr(theano, "gpuarray") and
                 theano.gpuarray.pygpu_activated):
             import pygpu
-            for i, inp in enumerate(self.input_storage):
-                if i in self.maker.fgraph.update_mapping.values():
-                    if isinstance(inp.data, pygpu.gpuarray.GpuArray):
-                        inp.data.sync()
+            for i in self.maker.fgraph.update_mapping.values():
+                inp = self.input_storage[i]
+                if isinstance(inp.data, pygpu.gpuarray.GpuArray):
+                    inp.data.sync()
 
 
 # pickling/deepcopy support for Function

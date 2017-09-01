@@ -3,6 +3,7 @@ import logging
 from collections import OrderedDict
 
 from nose.plugins.skip import SkipTest
+from nose.tools import assert_raises
 from parameterized import parameterized
 import numpy as np
 from itertools import product, chain
@@ -1534,6 +1535,24 @@ def test_dnn_reduction_strides():
     yield dnn_reduction_strides, (2, 3, 2), (0, 1, 2), slice(None, None, -1)
 
 
+def test_dnn_reduction_error():
+    nLoops = 5
+    vec = np.arange(0, 10, dtype=np.float32)
+    slow_output = np.zeros((5, 10))
+    for i in range(nLoops):
+        slow_output[i, :] = 2.0 * vec
+
+    slow_output = np.sum(slow_output.transpose(), axis=1)
+
+    vecT = T.vector(dtype=theano.config.floatX)
+    outputT = T.alloc(2.0 * vecT, 5, vecT.shape[0])
+    outputSummedT = T.sum(T.transpose(outputT), axis=1)
+    f3 = theano.function(inputs=[vecT], outputs=outputSummedT)
+
+    output = f3(vec)
+    utt.assert_allclose(slow_output, output)
+
+
 def dnn_maxargmax(nd, idtype, axis):
     inp = T.TensorType(idtype, (False,) * nd)()
     res = T.max_and_argmax(inp, axis=axis)
@@ -2265,50 +2284,18 @@ def test_dnn_rnn_lstm_grad_c():
             utt.assert_allclose(ref_grads_layer[j], g)
 
 
-def dconvfwd(border_mode, subsample, filter_dilation, num_groups):
-    def dconv(img, kern):
-        return dnn.dnn_conv(img, kern, border_mode=border_mode, subsample=subsample, dilation=filter_dilation,
-                            conv_mode='conv', direction_hint='forward', workmem=None,
-                            algo=None, precision=None, num_groups=num_groups)
-    return dconv
-
-
-def dconvgw(border_mode, subsample, filter_dilation, num_groups):
-    def dconvw(img, topgrad, kshp):
-        return dnn.dnn_gradweight(img, topgrad, kshp, border_mode=border_mode, subsample=subsample, dilation=filter_dilation,
-                                  conv_mode='conv', precision=None, algo=None, num_groups=num_groups)
-    return dconvw
-
-
-def dconvgi(border_mode, subsample, filter_dilation, num_groups):
-    def dconvi(kern, topgrad, imshp):
-        return dnn.dnn_gradinput(kern, topgrad, imshp, border_mode=border_mode, subsample=subsample, dilation=filter_dilation,
-                                 conv_mode='conv', precision=None, algo=None, num_groups=num_groups)
-    return dconvi
-
-
 class Cudnn_grouped_conv(Grouped_conv_noOptim):
-    mode = mode_with_gpu
-    conv = staticmethod(dconvfwd)
-    conv_gradw = staticmethod(dconvgw)
-    conv_gradi = staticmethod(dconvgi)
+    mode = mode_with_gpu.excluding('conv_gemm')
     conv_op = dnn.GpuDnnConv
     conv_gradw_op = dnn.GpuDnnConvGradW
     conv_gradi_op = dnn.GpuDnnConvGradI
-    flip_filter = False
-    is_dnn = True
 
 
 class Cudnn_grouped_conv3d(Grouped_conv3d_noOptim):
-    mode = mode_with_gpu
-    conv = staticmethod(dconvfwd)
-    conv_gradw = staticmethod(dconvgw)
-    conv_gradi = staticmethod(dconvgi)
+    mode = mode_with_gpu.excluding('conv_gemm')
     conv_op = dnn.GpuDnnConv
     conv_gradw_op = dnn.GpuDnnConvGradW
     conv_gradi_op = dnn.GpuDnnConvGradI
-    flip_filter = False
-    is_dnn = True
 
 
 def test_dnn_spatialtf():
@@ -2482,6 +2469,34 @@ def test_dnn_spatialtf():
         # Raise relative error tolerance when using float16
         rtol = 5e-2
     utt.assert_allclose(img_out_cpu, img_out_gpu, atol=atol, rtol=rtol)
+
+
+def test_dnn_spatialtf_invalid_shapes():
+    if not dnn.dnn_available(test_ctx_name):
+        raise SkipTest(dnn.dnn_available.msg)
+
+    inputs = T.tensor4('inputs')
+    theta = T.tensor3('theta')
+
+    st_dnn = dnn.dnn_spatialtf(inputs, theta)
+    st_dnn_func = theano.function([inputs, theta], st_dnn)
+
+    inputs_val = np.ones((3, 5, 7, 7), dtype=theano.config.floatX)
+
+    def try_theta_shp(theta_shp):
+        theta_val = np.ones(theta_shp, dtype=theano.config.floatX)
+        return st_dnn_func(inputs_val, theta_val)
+
+    # the theta shape for this input should be (3, 2, 3)
+    try_theta_shp((3, 2, 3))
+
+    # incorrect parameter dimensions
+    assert_raises(RuntimeError, try_theta_shp, (3, 1, 3))
+    assert_raises(RuntimeError, try_theta_shp, (3, 2, 1))
+
+    # number of rows does not match the number of input rows
+    assert_raises(RuntimeError, try_theta_shp, (1, 2, 3))
+    assert_raises(RuntimeError, try_theta_shp, (4, 2, 3))
 
 
 def test_dnn_spatialtf_grad():
@@ -2680,3 +2695,37 @@ class TestDnnConv3DRuntimeAlgorithms(TestDnnConv2DRuntimeAlgorithms):
         (1, [(4, 2, 20, 20, 20), (2, 2, 20, 19, 18)]),  # cache should be used
         (1, [(1, 2, 3, 4, 5), (6, 2, 3, 2, 1)])
     ]
+
+
+def test_conv_guess_once_with_dtypes():
+    # This test checks that runtime conv algorithm selection does not raise any exception
+    # when consecutive functions with different dtypes and precisions are executed.
+    utt.seed_rng()
+    inputs_shape = (2, 3, 5, 5)
+    filters_shape = (2, 3, 40, 4)
+    border_mode = 'full'
+
+    def get_function(dtype, precision):
+        inputs_val = np.random.random(inputs_shape).astype(dtype)
+        filters_val = np.random.random(filters_shape).astype(dtype)
+        inputs_val /= 10
+        filters_val /= 10
+        inputs = theano.shared(inputs_val)
+        filters = theano.shared(filters_val)
+        conv = dnn.dnn_conv(img=inputs, kerns=filters, border_mode=border_mode, precision=precision,
+                            algo='guess_once', direction_hint='forward!')
+        return theano.function([], conv)
+
+    f_true_half_config = get_function('float16', 'float16')
+    f_pseudo_half_config = get_function('float16', 'float32')
+    f_float_config = get_function('float32', 'float32')
+    f_double_config = get_function('float64', 'float64')
+    # Let's just see if everything runs without raising any exception.
+    try:
+        f_true_half_config()
+    except RuntimeError as e:
+        # float16 precision is not supported on all GPU cards.
+        assert 'CUDNN_STATUS_ARCH_MISMATCH' in e.message
+    f_pseudo_half_config()
+    f_float_config()
+    f_double_config()
