@@ -208,7 +208,7 @@ class Scan(PureOp):
             # Do the missing inputs check here to have the error early.
             for var in theano.gof.graph.inputs(self.outputs, self.inputs):
                 if var not in self.inputs and not isinstance(var, theano.Constant):
-                    raise theano.gof.MissingInputError("ScanOp is missing an input.")
+                    raise theano.gof.MissingInputError("ScanOp is missing an input: %s" % repr(var))
             self._cmodule_key = gof.CLinker().cmodule_key_variables(self.inputs,
                                                                     self.outputs,
                                                                     [])
@@ -1955,6 +1955,8 @@ class Scan(PureOp):
                 self.mintaps[self.n_mit_mot]
         else:
             grad_steps = inputs[0]
+        if self.as_while:
+            n_steps = outs[0].shape[0]
 
         # Restrict the number of grad steps according to
         # self.truncate_gradient
@@ -2172,7 +2174,11 @@ class Scan(PureOp):
                 dC_dinps_t[dx + self.n_seqs] += dC_dXtm1
         # Construct scan op
         # Seqs
-        outer_inp_seqs = [x[::-1] for x in inputs[1:1 + self.n_seqs]]
+        if self.as_while:
+            # equivalent to x[:n_steps][::-1]
+            outer_inp_seqs = [x[n_steps - 1::-1] for x in inputs[1:1 + self.n_seqs]]
+        else:
+            outer_inp_seqs = [x[::-1] for x in inputs[1:1 + self.n_seqs]]
         for idx in xrange(self.n_mit_mot + self.n_mit_sot):
             mintap = np.min(self.tap_array[idx])
             if idx < self.n_mit_mot:
@@ -2190,7 +2196,11 @@ class Scan(PureOp):
             x[:-1][::-1] for x in self.outer_sitsot_outs(outs)]
         for x in self.outer_nitsot_outs(dC_douts):
             if not isinstance(x.type, DisconnectedType):
-                outer_inp_seqs.append(x[::-1])
+                if self.as_while:
+                    # equivalent to x[:n_steps][::-1]
+                    outer_inp_seqs.append(x[n_steps - 1::-1])
+                else:
+                    outer_inp_seqs.append(x[::-1])
 
         if hasattr(inputs[0].tag, 'test_value'):
             # Here we tests that the new scan input sequence all have
@@ -2198,20 +2208,25 @@ class Scan(PureOp):
             # fct add and we want to keep it for all Scan op.  This is
             # used in T_Scan.test_grad_multiple_outs_taps to test
             # that.
+            if self.as_while:
+                n = n_steps.tag.test_value
+            else:
+                n = inputs[0].tag.test_value
             for taps, x in zip(self.mitsot_taps(),
                                self.outer_mitsot_outs(outs)):
                 mintap = np.min(taps)
                 if hasattr(x[::-1][:mintap], 'test_value'):
-                    assert (x[::-1][:mintap].tag.test_value.shape[0] ==
-                            inputs[0].tag.test_value)
+                    assert (x[::-1][:mintap].tag.test_value.shape[0] == n)
             for x in self.outer_sitsot_outs(outs):
                 if hasattr(x[::-1][:-1].tag, 'test_value'):
-                    assert (x[::-1][:-1].tag.test_value.shape[0] ==
-                            inputs[0].tag.test_value)
+                    assert (x[::-1][:-1].tag.test_value.shape[0] == n)
             for x in self.outer_nitsot_outs(outs):
                 if hasattr(x[::-1].tag, 'test_value'):
-                    assert (x[::-1].tag.test_value.shape[0] ==
-                            inputs[0].tag.test_value)
+                    if self.as_while:
+                        assert (x[n_steps - 1::-1].tag.test_value.shape[0] ==
+                                n)
+                    else:
+                        assert (x[::-1].tag.test_value.shape[0] == n)
         outer_inp_seqs += [x[::-1][:np.min(taps)]
                            for taps, x in zip(self.mitsot_taps(),
                                               self.outer_mitsot_outs(outs))]
@@ -2510,7 +2525,8 @@ class Scan(PureOp):
                         outer_inp_seqs +
                         outer_inp_mitmot +
                         outer_inp_sitsot +
-                        [inputs[0] for _ in xrange(n_nit_sot)] +
+                        [n_steps if self.as_while else inputs[0]
+                         for _ in xrange(n_nit_sot)] +
                         self.outer_shared(inputs) +
                         self.outer_non_seqs(inputs))
 
@@ -2538,7 +2554,19 @@ class Scan(PureOp):
             zip(outputs[offset:offset + self.n_seqs],
                 type_outs[offset:offset + self.n_seqs])):
             if t == 'connected':
-                gradients.append(x[::-1])
+                # If the forward scan is in as_while mode, we need to pad
+                # the gradients, so that they match the size of the input
+                # sequences.
+                if self.as_while:
+                    n_zeros = inputs[0] - n_steps
+                    shp = (n_zeros,)
+                    if x.ndim > 1:
+                        shp = shp + tuple(x.shape[i] for i in range(1, x.ndim))
+                    z = tensor.zeros(shp, dtype=x.dtype)
+                    x = tensor.concatenate([x[::-1], z], axis=0)
+                    gradients.append(x)
+                else:
+                    gradients.append(x[::-1])
             elif t == 'disconnected':
                 gradients.append(DisconnectedType()())
             elif t == 'through_shared':
@@ -2554,7 +2582,19 @@ class Scan(PureOp):
         end = self.n_mit_mot + self.n_mit_sot + self.n_sit_sot
         for p, (x, t) in enumerate(zip(outputs[:end], type_outs[:end])):
             if t == 'connected':
-                gradients.append(x[::-1])
+                # If the forward scan is in as_while mode, we need to pad
+                # the gradients, so that they match the size of the input
+                # sequences.
+                if self.as_while:
+                    n_zeros = inputs[0] - grad_steps
+                    shp = (n_zeros,)
+                    if x.ndim > 1:
+                        shp = shp + tuple(x.shape[i] for i in range(1, x.ndim))
+                    z = tensor.zeros(shp, dtype=x.dtype)
+                    x = tensor.concatenate([x[::-1], z], axis=0)
+                    gradients.append(x)
+                else:
+                    gradients.append(x[::-1])
             elif t == 'disconnected':
                 gradients.append(DisconnectedType()())
             elif t == 'through_shared':
@@ -2585,7 +2625,7 @@ class Scan(PureOp):
 
         start = len(gradients)
         gradients += [DisconnectedType()()
-                      for x in xrange(self.n_nit_sot)]
+                      for _ in xrange(self.n_nit_sot)]
         begin = end
 
         end = begin + n_sitsot_outs
@@ -2855,7 +2895,15 @@ def profile_printer(message, compile_time, fct_call_time,
         total_scan_fct_time = 0
         total_scan_op_time = 0
         for node, v in iteritems(apply_time):
-            if isinstance(node.op, Scan) and node.op.fn.profile:
+            if isinstance(node.op, Scan) and not node.op.fn.profile:
+                print(
+                    "  One scan node do not have its inner profile enabled. "
+                    "If you enable Theano profiler with "
+                    "'theano.function(..., profile=True)', you must manually"
+                    " enable the profiling for each scan too: "
+                    "'theano.scan_module.scan(...,profile=True)'."
+                    " Or use Theano flag 'profile=True'.", file=file)
+            elif isinstance(node.op, Scan) and node.op.fn.profile:
                 if v > 0:
                     scan_fct_time = node.op.fn.profile.call_time
                     scan_op_time = sum(node.op.fn.profile.apply_time.values())
@@ -2871,9 +2919,12 @@ def profile_printer(message, compile_time, fct_call_time,
                 else:
                     print((' The node took 0s, so we can not '
                            'compute the overhead'), node, file=file)
-        print('total %5.1fs  %5.1fs  %5.1fs  %5.1f%%  %5.1f%%' % (
-            total_super_scan_time,
-            total_scan_fct_time,
-            total_scan_op_time,
-            total_scan_fct_time / total_super_scan_time * 100,
-            total_scan_op_time / total_super_scan_time * 100), file=file)
+        if total_super_scan_time == 0:
+            print('  No scan have its inner profile enabled.', file=file)
+        else:
+            print('total %5.1fs  %5.1fs  %5.1fs  %5.1f%%  %5.1f%%' % (
+                total_super_scan_time,
+                total_scan_fct_time,
+                total_scan_op_time,
+                total_scan_fct_time / total_super_scan_time * 100,
+                total_scan_op_time / total_super_scan_time * 100), file=file)

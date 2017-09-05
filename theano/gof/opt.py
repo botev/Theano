@@ -6,6 +6,7 @@ amount of useful generic optimization tools.
 from __future__ import absolute_import, print_function, division
 
 from collections import deque, defaultdict, OrderedDict
+import contextlib
 import copy
 import inspect
 import logging
@@ -1131,13 +1132,20 @@ class LocalMetaOptimizer(LocalOptimizer):
 
     """
 
-    def __init__(self, tracks=None, optimizers=()):
-        self._tracks = tracks
-        self.optimizers = list(optimizers)
+    def __init__(self):
         self.verbose = config.metaopt.verbose
+        self.track_dict = defaultdict(lambda: [])
+        self.tag_dict = defaultdict(lambda: [])
+        self._tracks = []
+        self.optimizers = []
 
-    def register(self, optimizer):
+    def register(self, optimizer, tag_list):
         self.optimizers.append(optimizer)
+        for c in optimizer.tracks():
+            self.track_dict[c].append(optimizer)
+            self._tracks.append(c)
+        for tag in tag_list:
+            self.tag_dict[tag].append(optimizer)
 
     def tracks(self):
         return self._tracks
@@ -1167,39 +1175,40 @@ class LocalMetaOptimizer(LocalOptimizer):
             missing.difference_update(givens.keys())
         # ensure we have data for all input variables that need it
         if missing:
-            if self.verbose:
+            if self.verbose > 0:
                 print(("%s cannot meta-optimize %s, "
                        "%d of %d input shapes unknown" %
                        (self.__class__.__name__, node, len(missing), node.nin)))
             return
         # now we can apply the different optimizations in turn,
         # compile the resulting subgraphs and time their execution
-        if self.verbose:
+        if self.verbose > 1:
             print(("%s meta-optimizing %s (%d choices):" %
-                   (self.__class__.__name__, node, len(self.optimizers))))
+                   (self.__class__.__name__, node, len(self.get_opts(node)))))
         timings = []
-        for opt in self.optimizers:
+        for opt in self.get_opts(node):
             outputs = opt.transform(node)
             if outputs:
                 try:
                     fn = theano.function([], outputs, givens=givens,
                                          on_unused_input='ignore')
-                    timing = min(self.time_call(fn) for _ in range(3))
+                    fn.trust_input = True
+                    timing = min(self.time_call(fn) for _ in range(2))
                 except Exception as e:
-                    if self.verbose:
+                    if self.verbose > 0:
                         print("* %s: exception" % opt, e)
                     continue
                 else:
-                    if self.verbose:
+                    if self.verbose > 1:
                         print("* %s: %.5g sec" % (opt, timing))
                     timings.append((timing, outputs, opt))
             else:
-                if self.verbose:
+                if self.verbose > 0:
                     print("* %s: not applicable" % opt)
         # finally, we choose the fastest one
         if timings:
             timings.sort()
-            if self.verbose:
+            if self.verbose > 1:
                 print("= %s" % timings[0][2])
             return timings[0][1]
         return
@@ -1212,6 +1221,12 @@ class LocalMetaOptimizer(LocalOptimizer):
 
         """
         raise NotImplementedError()
+
+    def get_opts(self, node):
+        """
+        Can be overrided to change the way opts are selected
+        """
+        return self.track_dict[type(node.op)]
 
     def time_call(self, fn):
         start = time.time()
@@ -2313,7 +2328,6 @@ class EquilibriumOptimizer(NavigatorOptimizer):
         self.final_optimizers = []
         self.cleanup_optimizers = []
         self.tracks_on_change_inputs = tracks_on_change_inputs
-
         for opt in optimizers:
             if isinstance(opt, LocalOptimizer):
                 if opt.tracks() is None:
@@ -2889,7 +2903,7 @@ def pre_greedy_local_optimizer(list_optimizations, out):
 def copy_stack_trace(from_var, to_var):
     """
     Copies the stack trace from one or more tensor variables to
-    one or more tensor variables.
+    one or more tensor variables and returns the destination variables.
 
     Parameters
     ----------
@@ -2933,6 +2947,25 @@ def copy_stack_trace(from_var, to_var):
         # Copy over stack traces from from_var to each variable to
         # to_var, including the stack_trace of the to_var before
         to_var.tag.trace = getattr(to_var.tag, 'trace', []) + tr
+    return to_var
+
+
+@contextlib.contextmanager
+def inherit_stack_trace(from_var):
+    """
+    Contextmanager that copies the stack trace from one or more variable nodes to all
+    variable nodes constructed in the body. new_nodes is the list of all the newly created
+    variable nodes inside an optimization that is managed by graph.nodes_constructed().
+
+    Parameters
+    ----------
+    from_var
+        Variable node or a list of variable nodes to copy stack traces from.
+
+    """
+    with graph.nodes_constructed() as new_nodes:
+        yield
+    copy_stack_trace(from_var, new_nodes)
 
 
 def check_stack_trace(f_or_fgraph, ops_to_check='last', bug_print='raise'):
@@ -3038,3 +3071,34 @@ def check_stack_trace(f_or_fgraph, ops_to_check='last', bug_print='raise'):
                 return False
 
     return True
+
+
+class CheckStrackTraceFeature(object):
+    def on_import(self, fgraph, node, reason):
+        # In optdb we only register the CheckStackTraceOptimization when
+        # theano.config.check_stack_trace is not off but we also double check here.
+        if theano.config.check_stack_trace != 'off' and not check_stack_trace(fgraph, 'all'):
+            if theano.config.check_stack_trace == 'raise':
+                    raise AssertionError(
+                        'Empty stack trace! The optimization that inserted this variable is ' + str(reason))
+            elif theano.config.check_stack_trace in ['log', 'warn']:
+                apply_nodes_to_check = fgraph.apply_nodes
+                for node in apply_nodes_to_check:
+                    for output in node.outputs:
+                        if not hasattr(output.tag, 'trace') or not output.tag.trace:
+                            output.tag.trace = [[('', 0, 'Empty stack trace! The optimization that' +
+                                                 'inserted this variable is ' + str(reason), '')]]
+                if theano.config.check_stack_trace == 'warn':
+                        warnings.warn(
+                            'Empty stack trace! The optimization that inserted this variable is' + str(reason))
+
+
+class CheckStackTraceOptimization(Optimizer):
+    """Optimizer that serves to add CheckStackTraceOptimization as an fgraph feature."""
+
+    def add_requirements(self, fgraph):
+        if not hasattr(fgraph, 'CheckStrackTraceFeature'):
+            fgraph.attach_feature(CheckStrackTraceFeature())
+
+    def apply(self, fgraph):
+        pass

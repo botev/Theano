@@ -1,8 +1,7 @@
 from __future__ import absolute_import, print_function, division
-import os
 import numpy as np
 
-from theano import Op, Apply, config
+from theano import Op, Apply
 from six import StringIO
 
 try:
@@ -11,7 +10,7 @@ try:
 except ImportError:
     pass
 
-from .basic_ops import (as_gpuarray_variable, GpuKernelBase, Kernel,
+from .basic_ops import (as_gpuarray_variable, GpuKernelBase, Kernel, gpuarray_helper_inc_dir,
                         infer_context_name)
 from .type import GpuArrayType
 from .fp16_help import work_dtype, load_w, write_w
@@ -43,7 +42,7 @@ class GpuCrossentropySoftmaxArgmax1HotWithBias(GpuKernelBase, Op):
         return ['<numpy_compat.h>', '<gpuarray/types.h>', 'gpuarray_helper.h']
 
     def c_header_dirs(self):
-        return [os.path.dirname(__file__)]
+        return [gpuarray_helper_inc_dir()]
 
     def gpu_kernels(self, node, nodename):
         dtype_x = node.inputs[0].dtype
@@ -76,7 +75,8 @@ class GpuCrossentropySoftmaxArgmax1HotWithBias(GpuKernelBase, Op):
             gpuarray.GpuArray, gpuarray.SIZE, gpuarray.SSIZE
         ]
         sio = StringIO()
-        print("""
+        print("""#include "cluda.h"
+
         KERNEL void %(kname)s(const ga_size M, const ga_size N,
             GLOBAL_MEM const %(type_x)s* x_data, const ga_size offset_x, const ga_ssize xs0, const ga_ssize xs1,
             GLOBAL_MEM const %(type_b)s* b, const ga_size offset_b, const ga_ssize bs0,
@@ -187,12 +187,6 @@ class GpuCrossentropySoftmaxArgmax1HotWithBias(GpuKernelBase, Op):
                 %(fail)s;
             }
         """ % locals()
-        sync = ""
-        if config.gpuarray.sync:
-            sync = """
-            err = GpuArray_sync(&%(z)s->ga);
-            %(err_check)s
-            """ % locals()
         sio = StringIO()
         print("""
         if (PyGpuArray_DIMS(%(x)s)[0] !=
@@ -235,13 +229,12 @@ class GpuCrossentropySoftmaxArgmax1HotWithBias(GpuKernelBase, Op):
                 %(am)s->ga.data, %(am)s->ga.offset,
                 PyGpuArray_STRIDE(%(am)s, 0) / %(itemsize_am)s);
             %(err_check)s
-            %(sync)s
         }
         """ % locals(), file=sio)
         return sio.getvalue()
 
     def c_code_cache_version(self):
-        return (13,)
+        return (14,)
 
 
 gpu_crossentropy_softmax_argmax_1hot_with_bias = GpuCrossentropySoftmaxArgmax1HotWithBias()
@@ -267,7 +260,7 @@ class GpuCrossentropySoftmax1HotWithBiasDx(GpuKernelBase, Op):
         return Apply(self, [dnll, sm, y_idx], [sm.type()])
 
     def c_code_cache_version(self):
-        return (13,)
+        return (14,)
 
     def c_headers(self):
         return ['<numpy_compat.h>', '<gpuarray/types.h>']
@@ -296,12 +289,6 @@ class GpuCrossentropySoftmax1HotWithBiasDx(GpuKernelBase, Op):
                 %(fail)s;
             }
         """ % locals()
-        sync = ""
-        if config.gpuarray.sync:
-            sync = """
-            err = GpuArray_sync(&%(z)s->ga);
-            %(err_check)s
-            """ % locals()
         return """
         // Get `dnll.shape[0]` or set it to zero if `dnll` is a scalar.
         const ssize_t %(dnll)s_dims0 = (PyGpuArray_NDIM(%(dnll)s) > 0 ?
@@ -378,7 +365,6 @@ class GpuCrossentropySoftmax1HotWithBiasDx(GpuKernelBase, Op):
                 (void *)&stride_DX0, (void *)&stride_DX1};
             int err = GpuKernel_call(&%(k_var)s, 3, n_blocks, threads_per_block, 0, kernel_params);
             %(err_check)s
-            %(sync)s
         }
         assert(%(dx)s);
         """ % locals()
@@ -408,7 +394,8 @@ class GpuCrossentropySoftmax1HotWithBiasDx(GpuKernelBase, Op):
             gpuarray.GpuArray, gpuarray.SIZE, gpuarray.SSIZE, gpuarray.SSIZE,
         ]
         sio = StringIO()
-        print("""
+        print("""#include "cluda.h"
+
         KERNEL void %(kname)s(
            const ga_size N, const ga_size K,
            GLOBAL_MEM const %(type_dnll)s* dnll, const ga_size offset_dnll, const ga_ssize dnll_s0,
@@ -465,7 +452,7 @@ class GpuSoftmax(GpuKernelBase, Op):
         return shape
 
     def c_code_cache_version(self):
-        return (16,)
+        return (17,)
 
     def c_headers(self):
         return ['<numpy_compat.h>', '<gpuarray/types.h>']
@@ -487,15 +474,6 @@ class GpuSoftmax(GpuKernelBase, Op):
                 %(fail)s;
             }
         """ % locals()
-        sync = ""
-        if config.gpuarray.sync:
-            sync = """
-            err = GpuArray_sync(&%(z)s->ga);
-            msg = "sync error";
-            %(err_check)s
-            """ % locals()
-        else:
-            sync = ""
         return """
         if (PyGpuArray_NDIM(%(x)s) != 2)
         {
@@ -519,7 +497,7 @@ class GpuSoftmax(GpuKernelBase, Op):
         {
             size_t n_blocks[3] = {std::min(PyGpuArray_DIMS(%(x)s)[0], (size_t)(32 * 1024)), 1, 1};
 //TODO, detect the maximum number of thread per block.
-            size_t threads_per_block[3] = {std::min(PyGpuArray_DIMS(%(x)s)[1], (size_t)256), 1, 1}; // TODO: Read GA_CTX_PROP_MAXLSIZE
+            size_t threads_per_block[3] = {std::min(PyGpuArray_DIMS(%(x)s)[1], (size_t)256), 1, 1}; // TODO: Read GA_CTX_PROP_MAXLSIZE0
             size_t shmem_sz = PyGpuArray_DIMS(%(x)s)[1] *
                                      2 * sizeof(npy_%(work_x)s);
             ssize_t stride_X0 = PyGpuArray_STRIDES(%(x)s)[0] / %(itemsize_x)s;
@@ -555,7 +533,6 @@ class GpuSoftmax(GpuKernelBase, Op):
                 msg = GpuKernel_error(&kSoftmax_fixed_shared%(nodename)s, err);
               }
               %(err_check)s
-              %(sync)s
             }
         }
         assert(%(z)s);
@@ -582,7 +559,8 @@ class GpuSoftmax(GpuKernelBase, Op):
         kernels = []
         kname = "kSoftmax"
         k_var = "kSoftmax_" + nodename
-        code = """
+        code = """#include "cluda.h"
+
         KERNEL void %(kname)s (const ga_size M, const ga_size N,
                                GLOBAL_MEM const %(type_x)s * x, const ga_size offset_x, const ga_ssize sx0, const ga_ssize sx1,
                                GLOBAL_MEM %(type_sm)s * sm, const ga_size offset_sm, const ga_ssize sm_s0, const ga_ssize sm_s1 GA_DECL_SHARED_PARAM(%(type_acc)s, buf))
@@ -655,7 +633,8 @@ class GpuSoftmax(GpuKernelBase, Op):
                               flags=flags, objvar=k_var))
         kname = "kSoftmax_fixed_shared"
         k_var = "kSoftmax_fixed_shared" + nodename
-        code = """
+        code = """#include "cluda.h"
+
         KERNEL void %(kname)s (const ga_size M, const ga_size N,
                                GLOBAL_MEM const %(type_x)s * x, const ga_size offset_x, const ga_ssize sx0, const ga_ssize sx1,
                                GLOBAL_MEM %(type_sm)s * sm, const ga_size offset_sm, const ga_ssize sm_s0, const ga_ssize sm_s1 GA_DECL_SHARED_PARAM(%(type_acc)s, buf))
@@ -751,7 +730,7 @@ class GpuSoftmaxWithBias(GpuKernelBase, Op):
         return [shape[0]]
 
     def c_code_cache_version(self):
-        return (15,)
+        return (16,)
 
     def c_headers(self):
         return ['<numpy_compat.h>', '<gpuarray/types.h>']
@@ -775,13 +754,6 @@ class GpuSoftmaxWithBias(GpuKernelBase, Op):
                 %(fail)s;
             }
         """ % locals()
-        sync = ""
-        if config.gpuarray.sync:
-            sync = """
-            err = GpuArray_sync(&%(z)s->ga);
-            msg = "sync error";
-            %(err_check)s
-            """ % locals()
         return """
         if (PyGpuArray_NDIM(%(x)s) != 2)
         {
@@ -820,7 +792,7 @@ class GpuSoftmaxWithBias(GpuKernelBase, Op):
         {
             size_t n_blocks[3] = {std::min(PyGpuArray_DIMS(%(x)s)[0], (size_t)(32*1024)), 1, 1};
 //TODO, detect the maximum number of thread per block.
-            size_t threads_per_block[3] = {std::min(PyGpuArray_DIMS(%(x)s)[1], (size_t)256), 1, 1}; // TODO: Read GA_CTX_PROP_MAXLSIZE
+            size_t threads_per_block[3] = {std::min(PyGpuArray_DIMS(%(x)s)[1], (size_t)256), 1, 1}; // TODO: Read GA_CTX_PROP_MAXLSIZE0
             size_t shmem_sz = PyGpuArray_DIMS(%(x)s)[1] *
                                      2 * sizeof(npy_%(work_x)s);
             ssize_t stride_X0 = PyGpuArray_STRIDES(%(x)s)[0] / %(itemsize_x)s;
@@ -856,7 +828,6 @@ class GpuSoftmaxWithBias(GpuKernelBase, Op):
                 msg = GpuKernel_error(&kSoftmaxWithBias_fixed_shared%(nodename)s, err);
               }
               %(err_check)s
-              %(sync)s
             }
         }
         assert(%(z)s);
@@ -887,7 +858,8 @@ class GpuSoftmaxWithBias(GpuKernelBase, Op):
         kernels = []
         kname = "kSoftmaxWithBias"
         k_var = "kSoftmaxWithBias_" + nodename
-        code = """
+        code = """#include "cluda.h"
+
         KERNEL void %(kname)s (const ga_size M, const ga_size N,
                        GLOBAL_MEM const %(type_x)s * x, const ga_size offset_x, const ga_ssize sx0, const ga_ssize sx1,
                        GLOBAL_MEM const %(type_b)s * b, const ga_size offset_b, const ga_ssize sb0,
@@ -963,7 +935,8 @@ class GpuSoftmaxWithBias(GpuKernelBase, Op):
                               flags=flags, objvar=k_var))
         kname = "kSoftmaxWithBias_fixed_shared"
         k_var = "kSoftmaxWithBias_fixed_shared" + nodename
-        code = """
+        code = """#include "cluda.h"
+
         KERNEL void %(kname)s (const ga_size M, const ga_size N,
                        GLOBAL_MEM const %(type_x)s * x, const ga_size offset_x, const ga_ssize sx0, const ga_ssize sx1,
                        GLOBAL_MEM const %(type_b)s * b, const ga_size offset_b, const ga_ssize sb0,

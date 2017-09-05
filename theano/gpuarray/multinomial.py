@@ -1,6 +1,5 @@
 # TODO test dtype != float32
 from __future__ import absolute_import, print_function, division
-import os
 import warnings
 
 try:
@@ -10,11 +9,11 @@ except ImportError:
 
 import theano
 import theano.sandbox.multinomial
-from theano import Apply, config
+from theano import Apply
 from theano.gof import Op
 
 from theano.tensor import NotScalarConstantError, get_scalar_constant_value
-from .basic_ops import as_gpuarray_variable, infer_context_name, GpuKernelBase, Kernel
+from .basic_ops import as_gpuarray_variable, infer_context_name, GpuKernelBase, Kernel, gpuarray_helper_inc_dir
 from .opt import register_opt, op_lifter, register_opt2
 from .type import GpuArrayType
 from .elemwise import GpuDimShuffle
@@ -37,7 +36,7 @@ class GPUAMultinomialFromUniform(GpuKernelBase, Op):
         return ['<numpy_compat.h>', 'gpuarray_helper.h']
 
     def c_header_dirs(self):
-        return [os.path.dirname(__file__)]
+        return [gpuarray_helper_inc_dir()]
 
     def make_node(self, pvals, unis):
         assert unis.dtype == pvals.dtype
@@ -67,7 +66,8 @@ class GPUAMultinomialFromUniform(GpuKernelBase, Op):
         work_ctype = pygpu.gpuarray.dtype_to_ctype(work_dtype(node.inputs[0].dtype))
         write_out_ctype = write_w(node.outputs[0].dtype)
         load_in_ctype = load_w(node.inputs[0].dtype)
-        code = """
+        code = """#include "cluda.h"
+
 KERNEL void k_multi_warp_multinomial(
     const ga_size nb_multi,
     const ga_size nb_outcomes,
@@ -137,7 +137,6 @@ KERNEL void k_multi_warp_multinomial(
         out, = outputs
         fail = sub['fail']
         ctx = sub['params']
-        sync = bool(config.gpuarray.sync)
         kname = self.gpu_kernels(node, name)[0].objvar
         out_typecode = pygpu.gpuarray.dtype_to_typecode(node.outputs[0].dtype)
         in_typecode = pygpu.gpuarray.dtype_to_typecode(node.inputs[0].dtype)
@@ -212,15 +211,14 @@ KERNEL void k_multi_warp_multinomial(
                 GpuKernel_error(&%(kname)s, err));
             %(fail)s;
         }
-        if(%(sync)d)
-            GpuArray_sync(&(out->ga));
+
     } // END NESTED SCOPE
         """ % locals()
 
         return s
 
     def c_code_cache_version(self):
-        return (5,)
+        return (6,)
 
 
 class GPUAChoiceFromUniform(GpuKernelBase, Op):
@@ -251,7 +249,7 @@ class GPUAChoiceFromUniform(GpuKernelBase, Op):
         return ['<numpy_compat.h>', 'gpuarray_helper.h']
 
     def c_header_dirs(self):
-        return [os.path.dirname(__file__)]
+        return [gpuarray_helper_inc_dir()]
 
     def make_node(self, pvals, unis, n):
         assert pvals.dtype == 'float32'
@@ -279,7 +277,8 @@ class GPUAChoiceFromUniform(GpuKernelBase, Op):
 
     def gpu_kernels(self, node, name):
         replace = int(self.replace)
-        code = """
+        code = """#include "cluda.h"
+
 KERNEL void k_multi_warp_multinomial_wor(
     const ga_size nb_multi,
     const ga_size nb_outcomes,
@@ -360,7 +359,6 @@ KERNEL void k_multi_warp_multinomial_wor(
         replace = int(self.replace)
         fail = sub['fail']
         ctx = sub['params']
-        sync = bool(config.gpuarray.sync)
         kname = self.gpu_kernels(node, name)[0].objvar
         s = """
     PyGpuArrayObject * pvals = %(pvals)s;
@@ -447,15 +445,14 @@ KERNEL void k_multi_warp_multinomial_wor(
            Py_DECREF(pvals_copy);
            %(fail)s;
         }
-        if(%(sync)d)
-            GpuArray_sync(&(out->ga));
+
         Py_DECREF(pvals_copy);
     } // END NESTED SCOPE
         """ % locals()
         return s
 
     def c_code_cache_version(self):
-        return (9,)
+        return (10,)
 
 
 @register_opt('fast_compile')
