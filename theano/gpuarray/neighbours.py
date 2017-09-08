@@ -401,22 +401,14 @@ class GpuImages2Neibs(GpuKernelBase, Images2Neibs, Op):
                 grid_d = 1+(((PyGpuArray_DIMS(%(ten4)s))[3]-d)/step_y);
             } else if (%(params)s->mode == MODE_HALF) {
                 if ( ((PyGpuArray_DIMS(%(ten4)s))[2] < c) ||
-                     ((((PyGpuArray_DIMS(%(ten4)s))[2]-(c%%2)) %% step_x)!=0))
+                     ((PyGpuArray_DIMS(%(ten4)s))[3] < d) )
                 {
                     PyErr_Format(PyExc_TypeError, "GpuImages2Neibs:"
-                                 " neib_shape[0]=%%d, neib_step[0]=%%d and"
-                                 " ten4.shape[2]=%%d not consistent",
-                                 c, step_x,
-                                 PyGpuArray_DIMS(%(ten4)s)[2]);
-                    %(fail)s;
-                }
-                if ( ((PyGpuArray_DIMS(%(ten4)s))[3] < d) ||
-                     ((((PyGpuArray_DIMS(%(ten4)s))[3]-(d%%2)) %% step_y)!=0))
-                {
-                    PyErr_Format(PyExc_TypeError, "GpuImages2Neibs:"
-                                 " neib_shape[1]=%%d, neib_step[1]=%%d and"
-                                 " ten4.shape[3]=%%d not consistent",
-                                 d, step_y,
+                                 " in half mode, don't support image shapes"
+                                 " smaller than the patch shape:",
+                                 " neib_shape=(%%d,%%d),"
+                                 " ten4[2:]=[%%d,%%d]",
+                                 c, d, PyGpuArray_DIMS(%(ten4)s)[2],
                                  PyGpuArray_DIMS(%(ten4)s)[3]);
                     %(fail)s;
                 }

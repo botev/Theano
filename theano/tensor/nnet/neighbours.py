@@ -240,16 +240,12 @@ class Images2Neibs(Op):
             # Plugging these in the equation for 'valid' we get
             # h + 2 * (c // 2) - c  = h - (c % 2)
             # w + 2 * (d // 2) - c  = w - (d % 2)
-            if (ten4.shape[2] < c) or (((ten4.shape[2] - (c % 2)) % step_x) != 0):
+            if (ten4.shape[2] < c) or (ten4.shape[3] < d):
                 raise TypeError(
-                    "neib_shape[0]=%d, neib_step[0]=%d and"
-                    " ten4.shape[2]=%d not consistent" %
-                    (c, step_x, ten4.shape[2]))
-            if (ten4.shape[3] < d) or (((ten4.shape[3] - (d % 2)) % step_y) != 0):
-                raise TypeError(
-                    "neib_shape[1]=%d, neib_step[1]=%d and"
-                    " ten4.shape[3]=%d not consistent" %
-                    (d, step_y, ten4.shape[3]))
+                    "Images2Neibs: in half mode, don't support image shapes"
+                    " smaller than patch shapes:"
+                    " neib_shape=(%d,%d), ten4[2:]=[%d,%d]" %
+                    (c, d, ten4.shape[2], ten4.shape[3]))
             # number of patch in height
             grid_c = 1 + ((ten4.shape[2] - (c % 2)) // step_x)
             # number of patch in width
@@ -466,23 +462,15 @@ class Images2Neibs(Op):
             grid_d = 1+(((PyArray_DIMS(%(ten4)s))[3]-d)/step_y);
         } else if (%(mode)s == MODE_HALF) {
             if ( ((PyArray_DIMS(%(ten4)s))[2] < c) ||
-                 ( (((PyArray_DIMS(%(ten4)s))[2]-(c%%2)) %% step_x)!=0))
+                 ((PyArray_DIMS(%(ten4)s))[3] < d) )
             {
                 PyErr_Format(PyExc_TypeError,
-                             "neib_shape[0]=%%ld, neib_step[0]=%%ld and"
-                             " ten4.shape[2]=%%ld not consistent",
-                             (long int)c, (long int)step_x,
-                             (long int)(PyArray_DIMS(%(ten4)s)[2]));
-                %(fail)s;
-            }
-            if ( ((PyArray_DIMS(%(ten4)s))[3] < d) ||
-                 ( (((PyArray_DIMS(%(ten4)s))[3]-(d%%2)) %% step_y)!=0))
-            {
-                PyErr_Format(PyExc_TypeError,
-                             "neib_shape[1]=%%ld, neib_step[1]=%%ld and"
-                             " ten4.shape[3]=%%ld not consistent",
-                             (long int)d, (long int)step_y,
-                             (long int)(PyArray_DIMS(%(ten4)s)[3]));
+                    "Images2Neibs: in half mode, don't support image"
+                    " shapes smaller then the patch shapes:"
+                    " neib_shape=(%%ld,%%ld), ten4[2:]=[%%ld,%%ld]",
+                    (long int)c, (long int)step_x,
+                    (long int)(PyArray_DIMS(%(ten4)s)[2]),
+                    (long int)(PyArray_DIMS(%(ten4)s)[3]));
                 %(fail)s;
             }
             //number of patch in height
